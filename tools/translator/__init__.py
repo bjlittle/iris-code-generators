@@ -15,7 +15,7 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with iris-code-generators.  If not, see <http://www.gnu.org/licenses/>.
 """
-Provides the framework to support the encoding of metOcean mapping
+Provides the framework to support the encoding of metarelate mapping
 translations.
 
 """
@@ -24,19 +24,27 @@ from abc import ABCMeta, abstractmethod, abstractproperty
 from collections import namedtuple
 import warnings
 
-from metocean.fuseki import FusekiServer
+from metarelate.fuseki import FusekiServer
 
 
 # Restrict the tokens exported from this module.
-__all__ = ['Mapping', 'CFFieldcodeMapping', 'FieldcodeCFMapping',
-           'StashCFMapping']
+__all__ = ['Mapping', 'CFFieldcodeMapping',
+           'FieldcodeCFMapping', 'StashCFMapping',
+           'GRIB1LocalParamCFMapping', 'CFGRIB1LocalParamMapping',
+           'GRIB1LocalParamCFConstrainedMapping',
+           'CFConstrainedGRIB1LocalParamMapping',
+           'GRIB2ParamCFMapping', 'CFGRIB2ParamMapping']
 
 CFName = namedtuple('CFName', 'standard_name long_name units')
+DimensionCoordinate = namedtuple('DimensionCoordinate',
+                                 'standard_name units points')
+G1LocalParam = namedtuple('G1LocalParam', 'edition t2version centre iParam')
+G2Param = namedtuple('G2Param', 'edition discipline category number')
 
 
 class Mapping(object):
     """
-    Abstract base class to support the encoding of specific metOcean
+    Abstract base class to support the encoding of specific metarelate
     mapping translations.
 
     """
@@ -45,18 +53,18 @@ class Mapping(object):
     def __init__(self, mappings):
         """
         Filter the given sequence of mappings for those member
-        :class:`metocean.Mapping` translations containing a source
-        :class`metocean.Concept` with a matching
+        :class:`metarelate.Mapping` translations containing a source
+        :class`metarelate.Concept` with a matching
         :attribute:`Mapping.source_scheme` and a target
-        :class:`metocean.Concept` with a matching
+        :class:`metarelate.Concept` with a matching
         :attribute:`Mapping.target_scheme`.
 
         Also see :method:`Mapping.valid_mapping` for further matching
-        criterion for candidate metOcean mapping translations.
+        criterion for candidate metarelate mapping translations.
 
         Args:
         * mappings:
-            Iterator of :class:`metocean.Mapping` instances.
+            Iterator of :class:`metarelate.Mapping` instances.
 
         """
         temp = []
@@ -76,12 +84,14 @@ class Mapping(object):
     def lines(self):
         """
         Provides an iterator generating the encoded string representation
-        of each member of this metOcean mapping translation.
+        of each member of this metarelate mapping translation.
 
         Returns:
             An iterator of string.
 
         """
+        msg = '\tGenerating phenomenon translation {!r}.'
+        print msg.format(self.mapping_name)
         lines = ['\n%s = {\n' % self.mapping_name]
         payload = [self.encode(mapping) for mapping in self.mappings]
         lines.extend(payload)
@@ -99,7 +109,7 @@ class Mapping(object):
     def encode(self, mapping):
         """
         Abstract method to return the chosen encoded representation
-        of a metOcean mapping translation.
+        of a metarelate mapping translation.
 
         """
 
@@ -107,15 +117,15 @@ class Mapping(object):
     def mapping_name(self):
         """
         Abstract property that specifies the name of the dictionary
-        to contain the encoding of this metOcean mapping translation.
+        to contain the encoding of this metarelate mapping translation.
 
         """
-    
+
     @abstractproperty
     def source_scheme(self):
         """
         Abstract property that specifies the name of the scheme for
-        the source :class:`metocean.Concept` defining this metOcean
+        the source :class:`metarelate.Concept` defining this metarelate
         mapping translation.
 
         """
@@ -124,7 +134,7 @@ class Mapping(object):
     def target_scheme(self):
         """
         Abstract property that specifies the name of the scheme for
-        the target :class:`metocean.Concept` defining this metOcean
+        the target :class:`metarelate.Concept` defining this metarelate
         mapping translation.
 
         """
@@ -133,9 +143,9 @@ class Mapping(object):
     def valid_mapping(self, mapping):
         """
         Abstract method that determines whether the provided
-        :class:`metocean.Mapping` is a translation for the required
-        source :class:`metocean.Concept` to the required target
-        :class:`metocean.Concept`.
+        :class:`metarelate.Mapping` is a translation from the required
+        source :class:`metarelate.Concept` to the required target
+        :class:`metarelate.Concept`.
 
         """
 
@@ -143,52 +153,169 @@ class Mapping(object):
         """Determine whether a fully populated property is available."""
         return prop is not None and prop.complete
 
-    def cf_phenomenon_notation(self, concept):
+    def cf_constrained_notation(self, concept):
         """
-        Given a CF concept from a mapping, the skos notation for
-        the associated CF standard name, long name and units of the
-        the phenomenon are returned.
+        Given a CF component from a mapping, the skos notation for
+        the associated CF coordinate and phenomenon are returned.
+
+        See :meth:`Mapping.cf_coordinate_notation` and
+        :meth:`Mapping.cf_phenomenon_notation`.
 
         Args:
         * concept:
-            A :class:`metocean.Concept` instance for a CF scheme.
+            A :class:`metarelate.Concept` instance.
 
         Returns:
-            Tuple containing the CF standard name, long name and units.
+            Tuple containing the :class:`DimensionCoordinate` and
+            :class:`CFName` namedtuples.
 
         """
-        units = concept.units.value.notation
-        standard_name = concept.standard_name
+        coordinate = phenomenon = None
+        for component in concept.components:
+            if component.type == 'dimensionCoordinate':
+                coordinate = self.cf_coordinate_notation(component)
+            if component.type == 'field':
+                phenomenon = self.cf_phenomenon_notation(component)
+        return coordinate, phenomenon
+
+    def cf_coordinate_notation(self, component):
+        """
+        Given a CF component from a mapping, the skos notation for
+        the associated CF standard name, units and points are returned.
+
+        Args:
+        * component:
+            A :class:`metarelate.Component` instance.
+
+        Returns:
+            Tuple containing the CF standard name, units and points
+            skos notation.
+
+        """
+        units = component.units.value.notation
+        points = int(component.points.value.notation)
+        standard_name = component.standard_name
         if self._available(standard_name):
             standard_name = standard_name.value.notation
-        long_name = concept.long_name
+        return DimensionCoordinate(standard_name, units, points)
+
+    def cf_phenomenon_notation(self, component):
+        """
+        Given a CF component from a mapping, the skos notation for
+        the associated CF standard name, long name and units of the
+        phenomenon are returned.
+
+        Args:
+        * component:
+            A :class:`metarelate.Concept` or
+            :class:`metarelate.Component` instance.
+
+        Returns:
+            Tuple containing the CF standard name, long name and units
+            skos notation.
+
+        """
+        units = component.units.value.notation
+        standard_name = component.standard_name
+        if self._available(standard_name):
+            standard_name = standard_name.value.notation
+        long_name = component.long_name
         if self._available(long_name):
             long_name = long_name.value.notation
         return CFName(standard_name, long_name, units)
 
-    def is_cf(self, concept, kind='field'):
+    def grib1_notation(self, concept):
         """
-        Determines whether the provided concept from a mapping
-        represents a simple CF concept of the given kind.
+        Given a GRIB (edition 1) concept from a mapping, the skos notation
+        for the associated GRIB edition, table II version, centre and
+        indicator of parameter are returned.
 
         Args:
         * concept:
-            A :class:`metocean.Concept` instance.
+            A :class:`metarelate.Concept` instance.
 
-        Kwags:
+        Returns:
+            Tuple containing the GRIB1 edition, version, centre and
+            indicator skos notation.
+
+        """
+        edition = int(concept.editionNumber.value.notation)
+        version = int(concept.table2Version.value.notation)
+        centre = int(concept.centre.value.notation)
+        indicator = int(concept.indicatorOfParameter.value.notation)
+        return G1LocalParam(edition, version, centre, indicator)
+
+    def grib2_notation(self, concept):
+        """
+        Given a GRIB (edition 2) concept from a mapping, the skos notation
+        for the associated GRIB edition, discipline, parameter category and
+        parameter number are returned.
+
+        Args:
+        * concept:
+            A :class:`metarelate.Concept` instance.
+
+        Returns:
+            Tuple containing the GRIB2 edition, discipline, category and
+            number skos notation.
+
+        """
+        edition = int(concept.editionNumber.value.notation)
+        discipline = int(concept.discipline.value.notation)
+        category = int(concept.parameterCategory.value.notation)
+        number = int(concept.parameterNumber.value.notation)
+        return G2Param(edition, discipline, category, number)
+
+    def is_cf(self, component, kind='field'):
+        """
+        Determines whether the provided component from a mapping
+        represents a simple CF component of the given kind.
+
+        Args:
+        * component:
+            A :class:`metarelate.Concept` or
+            :class:`metarelate.Component` instance.
+
+        Kwargs:
         * kind:
-            The type of :class:`metocean.Concept`.
-            Defaults to 'field'.
+            The type of CF :class:`metarelate.Concept` or
+            :class:`metarelate.Component`. Defaults to 'field'.
 
-        Return:
+        Returns:
             Boolean.
 
         """
         result = False
-        if concept.simple:
-            result = self._available(concept.type) and \
-                concept.type == kind and \
-                self._available(concept.units)
+        if component.simple:
+            result = self._available(component.type) and \
+                component.type == kind and \
+                self._available(component.units)
+        return result
+
+    def is_cf_constrained(self, concept):
+        """
+        Determines whether the provided concept from a mapping
+        represents a compound CF concept for a phenomenon and
+        a dimension coordinate constraint.
+
+        Args:
+        * concept:
+            A :class:`metarelate.Concept` instance.
+
+        Returns:
+            Boolean.
+
+        """
+        result = False
+        if len(concept) == 2:
+            constraint = phenomenon = False
+            for component in concept.components:
+                if self.is_cf(component, kind='dimensionCoordinate') and \
+                        self._available(component.points):
+                    constraint = True
+                if self.is_cf(component):
+                    phenomenon = True
+            result = constraint and phenomenon
         return result
 
     def is_fieldcode(self, concept):
@@ -198,7 +325,7 @@ class Mapping(object):
 
         Args:
         * concept:
-            A :class:`metocean.Concept` instance.
+            A :class:`metarelate.Concept` instance.
 
         Returns:
             Boolean.
@@ -209,6 +336,49 @@ class Mapping(object):
             result = self._available(concept.lbfc)
         return result
 
+    def is_grib1_local_param(self, concept):
+        """
+        Determines whether the provided concept from a mapping
+        represents a simple GRIB edition 1 concept for a local
+        parameter.
+
+        Args:
+        * concept:
+            A :class:`metarelate.Concept` instance.
+
+        Returns:
+            Boolean.
+
+        """
+        result = False
+        if concept.simple:
+            result = self._available(concept.editionNumber) and \
+                self._available(concept.table2Version) and \
+                self._available(concept.centre) and \
+                self._available(concept.indicatorOfParameter)
+        return result
+
+    def is_grib2_param(self, concept):
+        """
+        Determines whether the provided concept from a mapping
+        represents a simple GRIB edition 2 concept for a parameter.
+
+        Args:
+        * concept:
+            A :class:`metarelate.Concept` instance.
+
+        Returns:
+            Boolean.
+
+        """
+        result = False
+        if concept.simple:
+            result = self._available(concept.editionNumber) and \
+                self._available(concept.discipline) and \
+                self._available(concept.parameterCategory) and \
+                self._available(concept.parameterNumber)
+        return result
+
     def is_stash(self, concept):
         """
         Determines whether the provided concept for a mapping
@@ -216,7 +386,7 @@ class Mapping(object):
 
         Args:
         * concept:
-            A :class:`metocean.Concept` instance.
+            A :class:`metarelate.Concept` instance.
 
         Returns:
             Boolean.
@@ -230,8 +400,8 @@ class Mapping(object):
 
 class CFFieldcodeMapping(Mapping):
     """
-    Represents a container for CF to UM field-code metOcean mapping
-    translations.
+    Represents a container for CF phenomenon to UM field-code metarelate
+    mapping translations.
 
     Encoding support is provided to generate the Python dictionary source
     code representation of these mappings from CF standard name, long name,
@@ -250,7 +420,7 @@ class CFFieldcodeMapping(Mapping):
 
         Args:
         * mapping:
-            A :class:`metocean.Mapping` instance representing a translation
+            A :class:`metarelate.Mapping` instance representing a translation
             from CF to UM field-code.
 
         Returns:
@@ -267,7 +437,7 @@ class CFFieldcodeMapping(Mapping):
     def mapping_name(self):
         """
         Property that specifies the name of the dictionary to contain the
-        encoding of this metOcean mapping translation.
+        encoding of this metarelate mapping translation.
 
         """
         return 'CF_TO_LBFC'
@@ -276,7 +446,8 @@ class CFFieldcodeMapping(Mapping):
     def source_scheme(self):
         """
         Property that specifies the name of the scheme for the source
-        :class:`metocean.Concept` defining this metOcean mapping translation.
+        :class:`metarelate.Concept` defining this metarelate mapping
+        translation.
 
         """
         return 'cf'
@@ -285,21 +456,22 @@ class CFFieldcodeMapping(Mapping):
     def target_scheme(self):
         """
         Property that specifies the name of the scheme for the target
-        :class:`metocean.Concept` defining this metOcean mapping translation.
+        :class:`metarelate.Concept` defining this metarelate mapping
+        translation.
 
         """
         return 'um'
 
     def valid_mapping(self, mapping):
         """
-        Determine whether the provided :class:`metocean.Mapping` represents a
+        Determine whether the provided :class:`metarelate.Mapping` represents a
         CF to UM field-code translation.
 
         Args:
         * mapping:
-            A :class:`metocean.Mapping` instance.
+            A :class:`metarelate.Mapping` instance.
 
-        Return:
+        Returns:
             Boolean.
 
         """
@@ -308,8 +480,8 @@ class CFFieldcodeMapping(Mapping):
 
 class FieldcodeCFMapping(Mapping):
     """
-    Represents a container for UM field-code to CF metOcean mapping
-    translations.
+    Represents a container for UM field-code to CF phenomenon metarelate
+    mapping translations.
 
     Encoding support is provided to generate the Python dictionary source
     code representation of these mappings from UM field-code to
@@ -328,7 +500,7 @@ class FieldcodeCFMapping(Mapping):
 
         Args:
         * mapping:
-            A :class:`metocean.Mapping` instance representing a translation
+            A :class:`metarelate.Mapping` instance representing a translation
             from UM field-code to CF.
 
         Returns:
@@ -345,7 +517,7 @@ class FieldcodeCFMapping(Mapping):
     def mapping_name(self):
         """
         Property that specifies the name of the dictionary to contain the
-        encoding of this metOcean mapping translation.
+        encoding of this metarelate mapping translation.
 
         """
         return 'LBFC_TO_CF'
@@ -354,7 +526,8 @@ class FieldcodeCFMapping(Mapping):
     def source_scheme(self):
         """
         Property that specifies the name of the scheme for the source
-        :class:`metocean.Concept` defining this metOcean mapping translation.
+        :class:`metarelate.Concept` defining this metarelate mapping
+        translation.
 
         """
         return 'um'
@@ -363,19 +536,20 @@ class FieldcodeCFMapping(Mapping):
     def target_scheme(self):
         """
         Property that specifies the name of the scheme for the target
-        :class:`metocean.Concept` defining this metOcean mapping translation.
+        :class:`metarelate.Concept` defining this metarelate mapping
+        translation.
 
         """
         return 'cf'
 
     def valid_mapping(self, mapping):
         """
-        Determine whether the provided :class:`metocean.Mapping` represents a
+        Determine whether the provided :class:`metarelate.Mapping` represents a
         UM field-code to CF translation.
 
         Args:
         * mapping:
-            A :class:`metocean.Mapping` instance.
+            A :class:`metarelate.Mapping` instance.
 
         Returns:
             Boolean.
@@ -386,8 +560,8 @@ class FieldcodeCFMapping(Mapping):
 
 class StashCFMapping(Mapping):
     """
-    Represents a container for UM stash-code to CF metOcean mapping
-    translations.
+    Represents a container for UM stash-code to CF phenomenon metarelate
+    mapping translations.
 
     Encoding support is provided to generate the Python dictionary source
     code representation of these mappings from UM stash-code to CF
@@ -406,7 +580,7 @@ class StashCFMapping(Mapping):
 
         Args:
         * mapping:
-            A :class:`metocean.Mapping` instance representing a translation
+            A :class:`metarelate.Mapping` instance representing a translation
             from UM stash-code to CF.
 
         Returns:
@@ -423,7 +597,7 @@ class StashCFMapping(Mapping):
     def mapping_name(self):
         """
         Property that specifies the name of the dictionary to contain the
-        encoding of this metOcean mapping translation.
+        encoding of this metarelate mapping translation.
 
         """
         return 'STASH_TO_CF'
@@ -432,7 +606,8 @@ class StashCFMapping(Mapping):
     def source_scheme(self):
         """
         Property that specifies the name of the scheme for the source
-        :class:`metocean.Concept` defining this metOcean mapping translation.
+        :class:`metarelate.Concept` defining this metarelate mapping
+        translation.
 
         """
         return 'um'
@@ -441,22 +616,537 @@ class StashCFMapping(Mapping):
     def target_scheme(self):
         """
         Property that specifies the name of the scheme for the target
-        :class:`metocean.Concept` defining this metOcean mapping translation.
+        :class:`metarelate.Concept` defining this metarelate mapping
+        translation.
 
         """
         return 'cf'
 
     def valid_mapping(self, mapping):
         """
-        Determine whether the provided :class:`metocean.Mapping` represents a
+        Determine whether the provided :class:`metarelate.Mapping` represents a
         UM stash-code to CF translation.
 
         Args:
         * mapping:
-            A :class:`metocean.Mapping` instance.
+            A :class:`metarelate.Mapping` instance.
 
         Returns:
             Boolean.
 
         """
         return self.is_stash(mapping.source) and self.is_cf(mapping.target)
+
+
+class GRIB1LocalParamCFMapping(Mapping):
+    """
+    Represents a container for GRIB (edition 1) local parameter to
+    CF phenomenon metarelate mapping translations.
+
+    Encoding support is provided to generate the Python dictionary source
+    code representation of these mappings from GRIB1 edition, table II version,
+    centre and indicator of parameter to CF standard name, long name and units.
+
+    """
+    def _key(self, mapping):
+        """Provides the sort key of the mappings order."""
+        return self.grib1_notation(mapping.source)
+
+    def encode(self, mapping):
+        """
+        Return a string of the Python source code required to represent an
+        entry in a dictionary mapping GRIB1 local parameter to CF phenomenon.
+
+        Args:
+        * mapping:
+            A :class:`metarelate.Mapping` instance representing a translation
+            from GRIB1 local parameter to CF phenomenon.
+
+        Returns:
+            String.
+
+        """
+        msg = '    ' \
+            'G1LocalParam({grib.edition}, {grib.t2version}, {grib.centre}, ' \
+            '{grib.iParam}): ' \
+            'CFName({cf.standard_name!r}, {cf.long_name!r}, {cf.units!r}),\n'
+        grib = self.grib1_notation(mapping.source)
+        cf = self.cf_phenomenon_notation(mapping.target)
+        return msg.format(grib=grib, cf=cf)
+
+    @property
+    def mapping_name(self):
+        """
+        Property that specifies the name of the dictionary to contain the
+        encoding of this metarelate mapping translation.
+
+        """
+        return 'GRIB1_LOCAL_TO_CF'
+
+    @property
+    def source_scheme(self):
+        """
+        Property that specifies the name of the scheme for the source
+        :class:`metarelate.Concept` defining this metarelate mapping
+        translation.
+
+        """
+        return 'grib'
+
+    @property
+    def target_scheme(self):
+        """
+        Property that specifies the name of the scheme for the target
+        :class:`metarelate.Concept` defining this metarelate mapping
+        translation.
+
+        """
+        return 'cf'
+
+    def valid_mapping(self, mapping):
+        """
+        Determine whether the provided :class:`metarelate.Mapping` represents a
+        GRIB1 local parameter to CF phenomenon translation.
+
+        Args:
+        * mapping:
+            A :class:`metarelate.Mapping` instance.
+
+        Returns:
+            Boolean.
+
+        """
+        return self.is_grib1_local_param(mapping.source) and \
+            self.is_cf(mapping.target)
+
+
+class CFGRIB1LocalParamMapping(Mapping):
+    """
+    Represents a container for CF phenomenon to GRIB (edition 1) local
+    parameter metarelate mapping translations.
+
+    Encoding support is provided to generate the Python dictionary source
+    code representation of these mappings from CF standard name, long name
+    and units to GRIB1 edition, table II version, centre and indicator of
+    parameter.
+
+    """
+    def _key(self, mapping):
+        """Provides the sort key of the mappings order."""
+        return self.cf_phenomenon_notation(mapping.source)
+
+    def encode(self, mapping):
+        """
+        Return a string of the Python source code required to represent an
+        entry in a dictionary mapping CF phenomenon to GRIB1 local parameter.
+
+        Args:
+        * mapping:
+            A :class:`metarelate.Mapping` instance representing a translation
+            from CF phenomenon to GRIB1 local parameter.
+
+        Returns:
+            String.
+
+        """
+        msg = '    ' \
+            'CFName({cf.standard_name!r}, {cf.long_name!r}, {cf.units!r}): ' \
+            'G1LocalParam({grib.edition}, {grib.t2version}, {grib.centre}, ' \
+            '{grib.iParam}),\n'
+        cf = self.cf_phenomenon_notation(mapping.source)
+        grib = self.grib1_notation(mapping.target)
+        return msg.format(cf=cf, grib=grib)
+
+    @property
+    def mapping_name(self):
+        """
+        Property that specifies the name of the dictionary to contain the
+        encoding of this metarelate mapping translation.
+
+        """
+        return 'CF_TO_GRIB1_LOCAL'
+
+    @property
+    def source_scheme(self):
+        """
+        Property that specifies the name of the scheme for the source
+        :class:`metarelate.Concept` defining this metarelate mapping
+        translation.
+
+        """
+        return 'cf'
+
+    @property
+    def target_scheme(self):
+        """
+        Property that specifies the name of the scheme for the target
+        :class:`metarelate.Concept` defining this metarelate mapping
+        translation.
+
+        """
+        return 'grib'
+
+    def valid_mapping(self, mapping):
+        """
+        Determine whether the provided :class:`metarelate.Mapping` represents a
+        CF phenomenon to GRIB1 local parameter translation.
+
+        Args:
+        * mapping:
+            A :class:`metarelate.Mapping` instance.
+
+        Returns:
+            Boolean.
+
+        """
+        return self.is_cf(mapping.source) and \
+            self.is_grib1_local_param(mapping.target)
+
+
+class GRIB1LocalParamCFConstrainedMapping(Mapping):
+    """
+    Represents a container for GRIB (edition 1) local parameter to
+    CF phenomenon and dimension coordinate constraint metarelate mapping
+    translations.
+
+    Encoding support is provided to generate the Python dictionary source
+    code representation of these mappings from GRIB1 edition, table II version,
+    centre and indicator of parameter to CF phenomenon standard name, long name
+    and units, and CF dimension coordinate standard name, units and points.
+
+    """
+    def _key(self, mapping):
+        """Provides the sort key of the mapping order."""
+        return self.grib1_notation(mapping.source)
+
+    def encode(self, mapping):
+        """
+        Return a string of the Python source code required to represent an
+        entry in a dictionary mapping GRIB1 local parameter to CF phenomenon
+        and dimension coordinate.
+
+        Args:
+        * mapping:
+            A :class:`metarelate.Mapping` instance representing a translation
+            from GRIB1 local parameter to CF phenomenon and dimension
+            coordinate.
+
+        Returns:
+            String.
+
+        """
+        msg = '    ' \
+            'G1LocalParam({grib.edition}, {grib.t2version}, {grib.centre}, ' \
+            '{grib.iParam}): ' \
+            '(CFName({phenomenon.standard_name!r}, ' \
+            '{phenomenon.long_name!r}, {phenomenon.units!r}), ' \
+            'DimensionCoordinate({coordinate.standard_name!r}, ' \
+            '{coordinate.units!r}, ({coordinate.points},))),\n'
+        grib = self.grib1_notation(mapping.source)
+        coordinate, phenomenon = self.cf_constrained_notation(mapping.target)
+        return msg.format(grib=grib, phenomenon=phenomenon,
+                          coordinate=coordinate)
+
+    @property
+    def mapping_name(self):
+        """
+        Property that specifies the name of the dictionary to contain the
+        encoding of this metarelate mapping translation.
+
+        """
+        return 'GRIB1_LOCAL_TO_CF_CONSTRAINED'
+
+    @property
+    def source_scheme(self):
+        """
+        Property that specifies the name of the scheme for the source
+        :class:`metarelate.Concept` defining this metarelate mapping
+        translation.
+
+        """
+        return 'grib'
+
+    @property
+    def target_scheme(self):
+        """
+        Property that specifies the name of the scheme for the target
+        :class:`metarelate.Concept` defining this metarelate mapping
+        translation.
+
+        """
+        return 'cf'
+
+    def valid_mapping(self, mapping):
+        """
+        Determine whether the provided :class:`metarelate.Mapping` represents a
+        GRIB1 local parameter to CF phenomenon and dimension coordinate
+        translation.
+
+        Args:
+        * mapping:
+            A :class:`metarelate.Mapping` instance.
+
+        Returns:
+            Boolean.
+
+        """
+        return self.is_grib1_local_param(mapping.source) and \
+            self.is_cf_constrained(mapping.target)
+
+
+class CFConstrainedGRIB1LocalParamMapping(Mapping):
+    """
+    Represents a container for CF phenomenon and dimension coordinate
+    constraint to GRIB (edition 1) local parameter metarelate mapping
+    translations.
+
+    Encoding support is provided to generate the Python dictionary source
+    code representation of these mappings from CF phenomenon standard name,
+    long name and units, and CF dimension coordinate standard name, units and
+    points to GRIB1 edition, table II version, centre and indicator of
+    parameter.
+
+    """
+    def _key(self, mapping):
+        """Provides the sort key of the mappings order."""
+        return self.cf_constrained_notation(mapping.source)
+
+    def encode(self, mapping):
+        """
+        Return a string of the Python source code required to represent an
+        entry in a dictionary mapping CF phenomenon and dimension coordinate
+        to GRIB1 local parameter.
+
+        Args:
+        * mapping:
+            A :class:`metarelate.Mapping` instance representing a translation
+            from CF phenomenon and dimension coordinate to GRIB1 local
+            parameter.
+
+        Returns:
+            String.
+
+        """
+        msg = '    ' \
+            '(CFName({phenomenon.standard_name!r}, ' \
+            '{phenomenon.long_name!r}, {phenomenon.units!r}), ' \
+            'DimensionCoordinate({coordinate.standard_name!r}, ' \
+            '{coordinate.units!r}, ({coordinate.points},))): ' \
+            'G1LocalParam({grib.edition}, {grib.t2version}, {grib.centre}, ' \
+            '{grib.iParam}),\n'
+        coordinate, phenomenon = self.cf_constrained_notation(mapping.source)
+        grib = self.grib1_notation(mapping.target)
+        return msg.format(phenomenon=phenomenon, coordinate=coordinate,
+                          grib=grib)
+
+    @property
+    def mapping_name(self):
+        """
+        Property that specifies the name of the dictionary to contain the
+        encoding of this metarelate mapping translation.
+
+        """
+        return 'CF_CONSTRAINED_TO_GRIB1_LOCAL'
+
+    @property
+    def source_scheme(self):
+        """
+        Property that specifies the name of the scheme for the source
+        :class:`metarelate.Concept` defining this metarelate mapping
+        translation.
+
+        """
+        return 'cf'
+
+    @property
+    def target_scheme(self):
+        """
+        Property that specifies the name of the scheme for the target
+        :class:`metarelate.Concept` defining this metarelate mapping
+        translation.
+
+        """
+        return 'grib'
+
+    def valid_mapping(self, mapping):
+        """
+        Determine whether the provided :class:`metarelate.Mapping` represents a
+        CF phenomenon and dimension coordinate to GRIB1 local parameter
+        translation.
+
+        Args:
+        * mapping:
+            A :class:`metarelate.Mapping` instance.
+
+        Returns:
+            Boolean.
+
+        """
+        return self.is_cf_constrained(mapping.source) and \
+            self.is_grib1_local_param(mapping.target)
+
+
+class GRIB2ParamCFMapping(Mapping):
+    """
+    Represents a container for GRIB (edition 2) parameter to CF phenomenon
+    metarelate mapping translations.
+
+    Encoding support is provided to generate the Python dictionary source
+    code representation of these mappings from GRIB2 edition, discipline,
+    parameter category and indicator of parameter to CF standard name,
+    long name and units.
+
+    """
+    def _key(self, mapping):
+        """Provides the sort key of the mapping order."""
+        return self.grib2_notation(mapping.source)
+
+    def encode(self, mapping):
+        """
+        Return a string of the Python source code required to represent an
+        entry in a dictionary mapping GRIB2 parameter to CF phenomenon.
+
+        Args:
+        * mapping:
+            A :class:`metarelate.Mapping` instance representing a translation
+            from GRIB2 parameter to CF phenomenon.
+
+        Returns:
+            String.
+
+        """
+        msg = '    ' \
+            'G2Param({grib.edition}, {grib.discipline}, {grib.category}, ' \
+            '{grib.number}): ' \
+            'CFName({cf.standard_name!r}, {cf.long_name!r}, {cf.units!r}),\n'
+        grib = self.grib2_notation(mapping.source)
+        cf = self.cf_phenomenon_notation(mapping.target)
+        return msg.format(grib=grib, cf=cf)
+
+    @property
+    def mapping_name(self):
+        """
+        Property that specifies the name of the dictionary to contain the
+        encoding of this metarelate mapping translation.
+
+        """
+        return 'GRIB2_TO_CF'
+
+    @property
+    def source_scheme(self):
+        """
+        Property that specifies the name of the scheme for the source
+        :class:`metarelate.Concept` defining this metarelate mapping
+        translation.
+
+        """
+        return 'grib'
+
+    @property
+    def target_scheme(self):
+        """
+        Property that specifies the name of the scheme for the target
+        :class:`metarelate.Concept` defining this metarelate mapping
+        translation.
+
+        """
+        return 'cf'
+
+    def valid_mapping(self, mapping):
+        """
+        Determine whether the provided :class:`metarelate.Mapping` represents a
+        GRIB2 parameter to CF phenomenon translation.
+
+        Args:
+        * mapping:
+            A :class:`metarelate.Mapping` instance.
+
+        Returns:
+            Boolean.
+
+        """
+        return self.is_grib2_param(mapping.source) and \
+            self.is_cf(mapping.target)
+
+
+class CFGRIB2ParamMapping(Mapping):
+    """
+    Represents a container for CF phenomenon to GRIB (edition 2) parameter
+    metarelate mapping translations.
+
+    Encoding support is provided to generate the Python dictionary source
+    code representation of these mappings from CF standard name, long name
+    and units to GRIB2 edition, discipline, parameter category and indicator
+    of parameter.
+
+    """
+    def _key(self, mapping):
+        """Provides the sort key of the mappings order."""
+        return self.cf_phenomenon_notation(mapping.source)
+
+    def encode(self, mapping):
+        """
+        Return a string of the Python source code required to represet an
+        entry in a dictionary mapping CF phenomenon to GRIB2 parameter.
+
+        Args:
+        * mapping:
+            A :class:`metarelate.Mapping` instance representing a translation
+            from CF phenomenon to GRIB2 parameter.
+
+        Returns:
+            String.
+
+        """
+        msg = '    ' \
+            'CFName({cf.standard_name!r}, {cf.long_name!r}, {cf.units!r}): ' \
+            'G2Param({grib.edition}, {grib.discipline}, {grib.category}, ' \
+            '{grib.number}),\n'
+        cf = self.cf_phenomenon_notation(mapping.source)
+        grib = self.grib2_notation(mapping.target)
+        return msg.format(cf=cf, grib=grib)
+
+    @property
+    def mapping_name(self):
+        """
+        Property that specifies the name of the dictionary to contain the
+        encoding of this metarelate mapping translation.
+
+        """
+        return 'CF_TO_GRIB2'
+
+    @property
+    def source_scheme(self):
+        """
+        Property that specifies the name of the scheme for the source
+        :class:`metarelate.Concept` defining this metarelate mapping
+        translation.
+
+        """
+        return 'cf'
+
+    @property
+    def target_scheme(self):
+        """
+        Property that specifies the name of the scheme for the target
+        :class:`metarelate.Concept` defining this metarelate mapping
+        translation.
+
+        """
+        return 'grib'
+
+    def valid_mapping(self, mapping):
+        """
+        Determine whether the provided :class:`metarelate.Mapping` represents a
+        CF phenomenon to GRIB2 parameter translation.
+
+        Args:
+        * mapping:
+            A :class:`metarelate.Mapping` instance.
+
+        Returns:
+            Boolean.
+
+        """
+        return self.is_cf(mapping.source) and \
+            self.is_grib2_param(mapping.target)
